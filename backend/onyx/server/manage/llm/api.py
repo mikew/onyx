@@ -1470,6 +1470,8 @@ def get_litellm_available_models(
                 SyncModelEntry(
                     name=r.model_name,
                     display_name=r.model_name,
+                    # Needs https://github.com/onyx-dot-app/onyx/pull/10783
+                    #supports_reasoning=r.supports_reasoning,
                 )
                 for r in sorted_results
             ],
