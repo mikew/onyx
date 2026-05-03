@@ -379,19 +379,20 @@ def sync_model_configurations(
     if not provider:
         raise ValueError(f"LLM Provider '{provider_name}' not found")
 
-    # Get existing model names to count new additions
-    existing_names = {mc.name for mc in provider.model_configurations}
+    # Build a map of existing model configurations for quick lookup
+    existing_by_name = {mc.name: mc for mc in provider.model_configurations}
 
     new_count = 0
     for model in models:
-        if model.name not in existing_names:
-            # Insert new model with is_visible=False (user must explicitly enable)
-            supported_flows = [LLMModelFlowType.CHAT]
-            if model.supports_image_input:
-                supported_flows.append(LLMModelFlowType.VISION)
-            if model.supports_reasoning:
-                supported_flows.append(LLMModelFlowType.REASONING)
+        supported_flows = [LLMModelFlowType.CHAT]
+        if model.supports_image_input:
+            supported_flows.append(LLMModelFlowType.VISION)
+        if model.supports_reasoning:
+            supported_flows.append(LLMModelFlowType.REASONING)
 
+        existing = existing_by_name.get(model.name)
+        if existing is None:
+            # Insert new model with is_visible=False (user must explicitly enable)
             insert_new_model_configuration__no_commit(
                 db_session=db_session,
                 llm_provider_id=provider.id,
@@ -402,9 +403,21 @@ def sync_model_configurations(
                 display_name=model.display_name,
             )
             new_count += 1
+        else:
+            # Reconcile capability flows for existing models without touching
+            # user preferences (is_visible, max_input_tokens).
+            for flow_type in supported_flows:
+                if flow_type not in existing.llm_model_flow_types:
+                    create_new_flow_mapping__no_commit(
+                        db_session=db_session,
+                        model_configuration_id=existing.id,
+                        flow_type=flow_type,
+                    )
+            # Keep the denormalised supports_image_input column in sync
+            if model.supports_image_input and not existing.supports_image_input:
+                existing.supports_image_input = True
 
-    if new_count > 0:
-        db_session.commit()
+    db_session.commit()
 
     return new_count
 
