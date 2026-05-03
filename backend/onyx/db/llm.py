@@ -383,6 +383,7 @@ def sync_model_configurations(
     existing_by_name = {mc.name: mc for mc in provider.model_configurations}
 
     new_count = 0
+    flows_changed = 0
     for model in models:
         supported_flows = [LLMModelFlowType.CHAT]
         if model.supports_image_input:
@@ -404,20 +405,34 @@ def sync_model_configurations(
             )
             new_count += 1
         else:
-            # Reconcile capability flows for existing models without touching
-            # user preferences (is_visible, max_input_tokens).
-            for flow_type in supported_flows:
-                if flow_type not in existing.llm_model_flow_types:
-                    create_new_flow_mapping__no_commit(
-                        db_session=db_session,
-                        model_configuration_id=existing.id,
-                        flow_type=flow_type,
-                    )
-            # Keep the denormalised supports_image_input column in sync
-            if model.supports_image_input and not existing.supports_image_input:
-                existing.supports_image_input = True
+            # Mirror the flow set exactly — add missing flows, remove stale ones.
+            # User preferences (is_visible, max_input_tokens) are left untouched.
+            existing_flow_types = set(existing.llm_model_flow_types)
+            new_flow_types = set(supported_flows)
 
-    db_session.commit()
+            for flow_type in new_flow_types - existing_flow_types:
+                create_new_flow_mapping__no_commit(
+                    db_session=db_session,
+                    model_configuration_id=existing.id,
+                    flow_type=flow_type,
+                )
+                flows_changed += 1
+
+            for flow_type in existing_flow_types - new_flow_types:
+                db_session.execute(
+                    delete(LLMModelFlow).where(
+                        LLMModelFlow.model_configuration_id == existing.id,
+                        LLMModelFlow.llm_model_flow_type == flow_type,
+                    )
+                )
+                flows_changed += 1
+
+            # Keep the denormalised supports_image_input column in sync (both directions)
+            if existing.supports_image_input != model.supports_image_input:
+                existing.supports_image_input = model.supports_image_input
+
+    if new_count > 0 or flows_changed > 0:
+        db_session.commit()
 
     return new_count
 
